@@ -113,16 +113,13 @@ GET /audit-logs
 
 ## 👥 Group Member Roles
 
-| Member | Role | Responsibilities |
-|--------|------|-----------------|
-| Member 1 | Backend Lead | FastAPI application structure, authentication, JWT implementation |
-| Member 2 | Database Engineer | SQLAlchemy models, async database setup, migrations |
-| Member 3 | Services Developer | Appointment service, event system, audit logging |
-| Member 4 | Spatial/Analytics | H3 integration, regional analytics endpoint, h3_service |
+| Member                 | Role               |
+| ---------------------- | ------------------ |
+| **Seiitkhan Zhannur**  | Backend Developer  |
+| **Ruslan Ussen**       | Frontend Developer |
+| **Askhat Yeleubay**    | Frontend Developer |
+| **Margulan Baizhigit** | Mobile Developer   |
 
-> Update names above with your actual group members.
-
----
 
 ## How H3 is Used in the System
 
