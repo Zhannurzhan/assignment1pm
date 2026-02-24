@@ -57,11 +57,27 @@ async def create_db_tables() -> None:
 @app.post("/register")
 async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
 
-    result = await db.execute(select(User).where(User.email == user.email))
-    existing_user = result.scalars().first()
+    result_email = await db.execute(
+        select(User).where(User.email == user.email)
+    )
+    existing_email = result_email.scalars().first()
 
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+    if existing_email:
+        raise HTTPException(
+            status_code=400,
+            detail="Email already registered"
+        )
+
+    result_username = await db.execute(
+        select(User).where(User.username == user.username)
+    )
+    existing_username = result_username.scalars().first()
+
+    if existing_username:
+        raise HTTPException(
+            status_code=400,
+            detail="Username already taken"
+        )
 
     hashed_password = hash_password(user.password)
 
