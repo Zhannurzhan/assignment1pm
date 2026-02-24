@@ -148,16 +148,30 @@ async def get_my_appointments(
     current_user: User = Depends(get_current_user)
 ):
     if current_user.role == "Patient":
+        from app.models import Patient as PatientModel
+        patient_result = await db.execute(
+            select(PatientModel).where(PatientModel.user_id == current_user.id)
+        )
+        patient = patient_result.scalars().first()
+        if not patient:
+            raise HTTPException(status_code=404, detail="Patient profile not found")
         result = await db.execute(
             select(Appointment).where(
-                Appointment.patient_id == current_user.id
+                Appointment.patient_id == patient.id
             )
         )
 
     elif current_user.role == "Doctor":
+        from app.models import Doctor as DoctorModel
+        doctor_result = await db.execute(
+            select(DoctorModel).where(DoctorModel.user_id == current_user.id)
+        )
+        doctor = doctor_result.scalars().first()
+        if not doctor:
+            raise HTTPException(status_code=404, detail="Doctor profile not found")
         result = await db.execute(
             select(Appointment).where(
-                Appointment.doctor_id == current_user.id
+                Appointment.doctor_id == doctor.id
             )
         )
 

@@ -9,16 +9,17 @@ def convert_to_h3(lat: float, lon:float, resolution: int = 9) -> str:
     This fulfills the 'Institutional Spatial Indexing' requirement.
     """
     try:
-        return h3.geo_to_h3(lat, lon, resolution)
+        return h3.latlng_to_cell(lat, lon, resolution)  # geo_to_h3 -> latlng_to_cell (h3 v4 API)
     except Exception as e:
         return "invalid_coords"
     
-async def aggregate_by_h3(db: AsyncSession):
+async def aggregate_by_h3(db: AsyncSession, h3_index: str):  
     """
     Groups appointments by H3 index to show healthcare demand per region.
     """
     query = (
         select(Appointment.h3_index, func.count(Appointment.id).label("count"))
+        .where(Appointment.h3_index == h3_index)  # фильтрация по нужному региону
         .group_by(Appointment.h3_index)
     )
 
@@ -29,5 +30,5 @@ def get_neighboring_hexes(h3_index: str, ring_size: int = 1):
     """
     Finds clinics in the immediate neighborhood of a patient.
     """
-    return h3.k_ring(h3_index, ring_size)
+    return h3.grid_disk(h3_index, ring_size)  # k_ring -> grid_disk (h3 v4 API)
 

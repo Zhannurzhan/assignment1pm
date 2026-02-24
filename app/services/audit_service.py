@@ -17,6 +17,6 @@ async def log_action(
         entity_id = entity_id
     )
     db.add(new_log)
-    await db.commit()
+    await db.flush()
     print(f"Audit log: User {user_id} performed {action} on {entity_type} {entity_id}")
     

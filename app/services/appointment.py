@@ -27,7 +27,7 @@ async def create_appointment(
         doctor_id=doctor_id,
         appointment_time=appt_time,
         h3_index=patient_h3, # Storing spatial context for the appointment
-        status="scheduled"  # исправлено: было "CONFIRMED", модель использует "scheduled"
+        status="scheduled"
     )
     db.add(new_appt)
     await db.flush() # Get the appointment ID before committing
