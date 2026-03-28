@@ -1,225 +1,109 @@
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.security import OAuth2PasswordRequestForm
-from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.staticfiles import StaticFiles
-from typing import List
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from contextlib import asynccontextmanager
+import traceback
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import SQLAlchemyError
+from app.modules.auth.router import router as auth_router
+from app.core.event_bus import setup as setup_events
 
-from app.database import Base, engine, get_db
-from app.auth import get_current_user, RoleChecker
-from app.models import Patient, User, Appointment, AuditLog
-from app.schemas import UserCreate, AppointmentCreate, AppointmentResponse, TokenResponse
-from app.auth import hash_password, verify_password, create_access_token
-from app.services.appointment import create_appointment as create_appointment_service
-from app.services.audit_service import log_action
-from app.services.event_service import init_event_system
-from app.services.h3_service import aggregate_by_h3
+from app.modules.patients.router import router as patients_router   # NEW today
+from app.modules.doctors.router import router as doctors_router     # NEW today
+from app.modules.appointments.router import router as appointments_router
+from app.modules.analytics.router import router as analytics_router
+from app.modules.audit.router import router as audit_router
 
-try:
-    from swagger_ui_bundle import swagger_ui_3_path
-except Exception:
-    swagger_ui_3_path = None
+from app.core.database import init_db
+from app.core.event_bus import setup
 
-app = FastAPI(docs_url=None, redoc_url=None)
+# ── Import all models BEFORE init_db() ───────────────────────────────────────
+# These imports register each model on Base.metadata so SQLAlchemy
+# knows to create the table. If you forget one, that table won't exist.
+from app.modules.auth.models import User                          # noqa: F401
+from app.modules.patients.models import Patient                   # noqa: F401
+from app.modules.doctors.models import Doctor, DoctorSchedule, Specialty   # noqa: F401
+from app.modules.appointments.models import Appointment           # noqa: F401
+from app.modules.audit.models import AuditLog            
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # STARTUP: runs once when the server starts
+    print("Starting up...")
+    await init_db()      
+        # creates all tables in clinic.db
+    print("Database ready. All tables created.")
+    # event_bus.setup() will be added here on Day 4
+    setup_events()
+    yield
+    # SHUTDOWN: runs once when the server stops
+    print("Shutting down.")
 
-if swagger_ui_3_path:
-    app.mount("/swagger-ui", StaticFiles(directory=swagger_ui_3_path), name="swagger-ui")
 
+# ── Create the FastAPI app ────────────────────────────────────────────────────
+app = FastAPI(
+    title="Clinic Management System",
+    version="1.0.0",
+    description="Backend API for patients, doctors, and appointments",
+    lifespan=lifespan,
+)
 
-@app.get("/docs", include_in_schema=False)
-def custom_swagger_ui_html():
-    if swagger_ui_3_path:
-        return get_swagger_ui_html(
-            openapi_url=app.openapi_url,
-            title=f"{app.title} - Swagger UI",
-            swagger_js_url="/swagger-ui/swagger-ui-bundle.js",
-            swagger_css_url="/swagger-ui/swagger-ui.css",
-            swagger_favicon_url="/swagger-ui/favicon-32x32.png",
-            oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
-        )
+# ── Exception handlers ────────────────────────────────────────────────────────
 
-    # Fallback to CDN (original FastAPI behavior)
-    return get_swagger_ui_html(
-        openapi_url=app.openapi_url,
-        title=f"{app.title} - Swagger UI",
-        oauth2_redirect_url=app.swagger_ui_oauth2_redirect_url,
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Returns 422 with human-readable field errors instead of raw Pydantic output."""
+    errors = []
+    for error in exc.errors():
+        field = " → ".join(str(loc) for loc in error["loc"])
+        errors.append({"field": field, "message": error["msg"]})
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Validation error", "errors": errors},
     )
 
+
+@app.exception_handler(SQLAlchemyError)
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
+    """Returns 500 without exposing SQL details to the client."""
+    print(f"[DB ERROR] {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "A database error occurred. Please try again."},
+    )
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    """Catches any unhandled exception and returns 500."""
+    traceback.print_exc()
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An unexpected error occurred."},
+    )
+
+# ── CORS middleware ───────────────────────────────────────────────────────────
+# Allows your frontend (React, Flutter, Postman) to call this API.
+# allow_origins=["*"] is fine for development.
+# In production change "*" to your actual frontend URL.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
-async def create_db_tables() -> None:
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    init_event_system()
+async def startup():
+    setup()
+    print("Event bus ready")
 
+app.include_router(auth_router, prefix="/auth", tags=["auth"])
+app.include_router(patients_router, prefix="/patients", tags=["patients"])
+app.include_router(doctors_router, prefix="/doctors", tags=["doctors"])
+app.include_router(appointments_router, prefix="/appointments", tags=["appointments"])
+app.include_router(analytics_router, prefix="/analytics", tags=["analytics"])
+app.include_router(audit_router, prefix="/admin", tags=["audit"])
 
-@app.post("/register")
-async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
-
-    result_email = await db.execute(
-        select(User).where(User.email == user.email)
-    )
-    existing_email = result_email.scalars().first()
-
-    if existing_email:
-        raise HTTPException(
-            status_code=400,
-            detail="Email already registered"
-        )
-
-    result_username = await db.execute(
-        select(User).where(User.username == user.username)
-    )
-    existing_username = result_username.scalars().first()
-
-    if existing_username:
-        raise HTTPException(
-            status_code=400,
-            detail="Username already taken"
-        )
-
-    hashed_password = hash_password(user.password)
-
-    new_user = User(
-        username=user.username,
-        email=user.email,
-        password_hash=hashed_password,
-        role=user.role
-    )
-
-    db.add(new_user)
-    await db.commit()
-    await db.refresh(new_user)
-
-    return {"message": "User registered successfully"}
-
-@app.post("/login", response_model=TokenResponse)
-async def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
-    db: AsyncSession = Depends(get_db)
-):
-    email = form_data.username
-    password = form_data.password
-
-    result = await db.execute(select(User).where(User.email == email))
-    user = result.scalars().first()
-
-    if not user or not verify_password(password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    token = create_access_token({"sub": str(user.id)})
-
-    await log_action(         
-        db=db,
-        user_id=user.id,
-        action="Login",
-        entity_type="User",
-        entity_id=user.id
-    )
-
-    return {
-        "access_token": token,
-        "token_type": "bearer"
-    }
-
-@app.post("/setup-patient")
-async def setup_patient(
-    latitude: float,
-    longitude: float, 
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(RoleChecker(["Patient"]))
-):
-    import h3
-    h3_index = h3.latlng_to_cell(latitude, longitude, 7)
-    
-    patient = Patient(
-        user_id=current_user.id,
-        latitude=latitude,
-        longtitude=longitude,  
-        h3_index=h3_index
-    )
-    db.add(patient)
-    await db.commit()
-    return {"message": "Patient profile created", "h3_index": h3_index}
-
-
-@app.post("/appointments", response_model=AppointmentResponse)
-async def create_appointment_endpoint(
-    appointment_data: AppointmentCreate,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(RoleChecker(["Patient"]))
-):
-    appointment = await create_appointment_service(
-        db=db,
-        user_id=current_user.id,        
-        doctor_id=appointment_data.doctor_id,
-        appt_time=appointment_data.datetime 
-    )
-    return appointment
-
-@app.get("/appointments/my", response_model=List[AppointmentResponse])
-async def get_my_appointments(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    if current_user.role == "Patient":
-        from app.models import Patient as PatientModel
-        patient_result = await db.execute(
-            select(PatientModel).where(PatientModel.user_id == current_user.id)
-        )
-        patient = patient_result.scalars().first()
-        if not patient:
-            raise HTTPException(status_code=404, detail="Patient profile not found")
-        result = await db.execute(
-            select(Appointment).where(
-                Appointment.patient_id == patient.id
-            )
-        )
-
-    elif current_user.role == "Doctor":
-        from app.models import Doctor as DoctorModel
-        doctor_result = await db.execute(
-            select(DoctorModel).where(DoctorModel.user_id == current_user.id)
-        )
-        doctor = doctor_result.scalars().first()
-        if not doctor:
-            raise HTTPException(status_code=404, detail="Doctor profile not found")
-        result = await db.execute(
-            select(Appointment).where(
-                Appointment.doctor_id == doctor.id
-            )
-        )
-
-    else:
-        raise HTTPException(status_code=403, detail="Access denied")
-
-    appointments = result.scalars().all()
-    return appointments
-    
-@app.get("/analytics/{h3_index}")
-async def get_region_analytics(
-    h3_index: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(RoleChecker(["Admin"]))
-):
-    result = await aggregate_by_h3(db, h3_index)
-
-    return {
-        "region": h3_index,
-        "appointments": result
-    }
-
-@app.get("/audit-logs")
-async def get_audit_logs(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(RoleChecker(["Admin"]))
-):
-    result = await db.execute(select(AuditLog))
-    logs = result.scalars().all()
-
-    return logs
-
-@app.get("/")
-def root():
-    return {"message" : "Clinical management system running"}
+# ── Health check ─────────────────────────────────────────────────────────────
+@app.get("/", tags=["health"])
+async def health_check():
+    return {"status": "ok", "message": "Clinic API is running"}
