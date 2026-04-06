@@ -16,6 +16,8 @@ from app.modules.audit.router import router as audit_router
 
 from app.core.database import init_db
 from app.core.event_bus import setup
+from app.core.cache import get_redis, close_redis
+
 
 # ── Import all models BEFORE init_db() ───────────────────────────────────────
 # These imports register each model on Base.metadata so SQLAlchemy
@@ -34,8 +36,15 @@ async def lifespan(app: FastAPI):
     print("Database ready. All tables created.")
     # event_bus.setup() will be added here on Day 4
     setup_events()
+    try:
+        r = await get_redis()
+        await r.ping()
+        print("Redis connected.")
+    except Exception as e:
+        print(f"WARNING: Redis unavailable: {e}")
     yield
     # SHUTDOWN: runs once when the server stops
+    await close_redis()
     print("Shutting down.")
 
 
