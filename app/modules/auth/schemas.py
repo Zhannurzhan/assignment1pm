@@ -3,6 +3,7 @@ from enum import Enum
 
 
 
+
 class UserRole(str, Enum):
     ADMIN = "ADMIN"
     DOCTOR = "DOCTOR"
@@ -14,7 +15,7 @@ class RegisterSchema(BaseModel):
     username: str
     email: EmailStr
     password: str
-    role: UserRole
+    # role: UserRole
 
     @field_validator("password")
     @classmethod

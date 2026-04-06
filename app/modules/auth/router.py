@@ -1,10 +1,15 @@
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
-from app.core.dependencies import RoleChecker, get_current_user
+from app.core.dependencies import RoleChecker, get_current_user, oauth2_scheme
+from app.core.exceptions import ConflictException
 from app.core.pagination import paginate
+from app.core.security import decode_access_token, hash_password
+from app.core.cache import blacklist_token
 from app.modules.auth.schemas import RegisterSchema, LoginSchema, TokenResponse, UserResponse
 from app.modules.auth.service import AuthService
 from app.modules.auth.models import User, UserRole
@@ -39,6 +44,8 @@ async def register(
 
     return result
 
+
+
 @router.post("/login", response_model=TokenResponse)
 async def login(
     request: Request,
@@ -65,6 +72,125 @@ async def me(
     auth_service: AuthService = Depends(get_auth_service),
 ):
     return await auth_service.me(current_user)
+
+
+
+
+@router.post("/logout", summary="Logout — revoke current token")
+async def logout(
+    token: str = Depends(oauth2_scheme),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    payload = decode_access_token(token)
+    jti = payload.get("jti")
+    exp = payload.get("exp")
+
+    if jti and exp:
+        remaining = int(exp - datetime.utcnow().timestamp())
+        if remaining > 0:
+            await blacklist_token(jti, remaining)
+
+    await log(db=db, user_id=current_user.id, action="LOGOUT",
+              entity_type="User", entity_id=current_user.id)
+
+    return {"message": "Logged out successfully"}
+
+
+
+
+
+@router.post(
+    "/admin/users/create-doctor",
+    response_model=UserResponse,
+    status_code=201,
+    summary="Create a doctor account (Admin only)",
+    dependencies=[Depends(RoleChecker(["ADMIN"]))],
+)
+async def create_doctor_account(
+    dto: RegisterSchema,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # Check email unique
+    result = await db.execute(select(User).where(User.email == dto.email))
+    if result.scalar_one_or_none():
+        raise ConflictException("Email already registered")
+
+    # Check username unique
+    result = await db.execute(select(User).where(User.username == dto.username))
+    if result.scalar_one_or_none():
+        raise ConflictException("Username already taken")
+
+    user = User(
+        username=dto.username,
+        email=dto.email,
+        password_hash=hash_password(dto.password),
+        role="DOCTOR",      # ← hardcoded
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+
+    await log(
+        db=db,
+        user_id=current_user.id,
+        action=Actions.REGISTER,
+        entity_type="User",
+        entity_id=user.id,
+        extra_data={"created_role": "DOCTOR", "created_by": current_user.id},
+        request=request,
+    )
+
+    return UserResponse.model_validate(user)
+
+
+
+@router.post(
+    "/admin/users/create-admin",
+    response_model=UserResponse,
+    status_code=201,
+    summary="Create an admin account (Admin only)",
+    dependencies=[Depends(RoleChecker(["ADMIN"]))],
+)
+async def create_admin_account(
+    dto: RegisterSchema,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(select(User).where(User.email == dto.email))
+    if result.scalar_one_or_none():
+        raise ConflictException("Email already registered")
+
+    result = await db.execute(select(User).where(User.username == dto.username))
+    if result.scalar_one_or_none():
+        raise ConflictException("Username already taken")
+
+    user = User(
+        username=dto.username,
+        email=dto.email,
+        password_hash=hash_password(dto.password),
+        role="ADMIN",       # ← hardcoded
+        is_active=True,
+    )
+    db.add(user)
+    await db.commit()
+    await db.refresh(user)
+
+    await log(
+        db=db,
+        user_id=current_user.id,
+        action=Actions.REGISTER,
+        entity_type="User",
+        entity_id=user.id,
+        extra_data={"created_role": "ADMIN", "created_by": current_user.id},
+        request=request,
+    )
+
+    return UserResponse.model_validate(user)
 
 
 

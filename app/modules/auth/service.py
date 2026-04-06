@@ -2,7 +2,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.modules.auth.models import User
-from app.modules.auth.schemas import RegisterSchema
+from app.modules.auth.schemas import RegisterSchema, UserRole
 from app.core.security import hash_password, verify_password, create_access_token
 from app.core.exceptions import ConflictException, UnauthorizedException
 
@@ -44,7 +44,8 @@ class AuthService:
         return {
             "access_token": token,
             "token_type": "bearer",
-            "role": user.role,
+            #"role": user.role,
+            "role": UserRole.PATIENT,
             "user_id": user.id,
         }
 
