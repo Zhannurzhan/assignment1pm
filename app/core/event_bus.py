@@ -1,4 +1,5 @@
 from typing import Callable, Dict, List, Any
+from app.core.cache import cache_delete, CacheKeys
 import asyncio
 
 _handlers: Dict[str, List[Callable]] = {}
@@ -28,10 +29,11 @@ async def send_notification(payload: dict):
 
 
 
-async def update_region_stats(payload: dict):
-    print(f"[STATS] Updating region stats: {payload}")
-
-
+async def update_region_stats(payload: dict) -> None:
+    print(f"[H3] +1 appointment in region {payload.get('h3_index')}")
+    await cache_delete(CacheKeys.ANALYTICS_DEMAND)
+    await cache_delete(CacheKeys.ANALYTICS_DOCTORS)
+    print("[CACHE] Analytics cache cleared")
 
 async def send_cancellation_notice(payload: dict):
     print(f"[CANCEL] Appointment cancelled: {payload}")
